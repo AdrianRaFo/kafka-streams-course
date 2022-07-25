@@ -1,0 +1,104 @@
+version: "3.5"
+
+services:
+  customers-db:
+    image: "postgres:13.5-alpine"
+    container_name: customers-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: kstreaming
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+
+  flyway:
+    image: flyway/flyway
+    command: -url=jdbc:postgresql://customers-db:5432/kstreaming -user=postgres -password=postgres migrate
+    volumes:
+      - ./docker-compose/postgres/:/flyway/sql
+    depends_on:
+      - customers-db
+
+  zookeeper:
+    image: "confluentinc/cp-zookeeper:5.4.6"
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  broker:
+    image: "confluentinc/cp-enterprise-kafka:5.4.6"
+    hostname: broker
+    container_name: broker
+    depends_on:
+      - zookeeper
+    ports:
+      - "29092:29092"
+      - "9092:9092"
+    restart: always
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_METRIC_REPORTERS: io.confluent.metrics.reporter.ConfluentMetricsReporter
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      CONFLUENT_METRICS_REPORTER_BOOTSTRAP_SERVERS: broker:29092
+      CONFLUENT_METRICS_REPORTER_ZOOKEEPER_CONNECT: zookeeper:2181
+      CONFLUENT_METRICS_REPORTER_TOPIC_REPLICAS: 1
+      CONFLUENT_METRICS_ENABLE: 'true'
+      CONFLUENT_SUPPORT_CUSTOMER_ID: 'anonymous'
+
+  schema-registry:
+    image: "confluentinc/cp-schema-registry:5.4.6"
+    hostname: schema-registry
+    container_name: schema-registry
+    depends_on:
+      - zookeeper
+      - broker
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_CONNECTION_URL: 'zookeeper:2181'
+
+  kafka-connect-avro:
+    build:
+      context: .
+      dockerfile: ./docker-compose/kafka-connect/Dockerfile
+    hostname: kafka-connect-avro
+    container_name: kafka-connect-avro
+    ports:
+      - "8082:8082"
+    depends_on:
+      - broker
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: 'broker:29092'
+      CONNECT_REST_PORT: 8082
+      CONNECT_GROUP_ID: "project-avro"
+      CONNECT_CONFIG_STORAGE_TOPIC: "project-avro-config"
+      CONNECT_OFFSET_STORAGE_TOPIC: "project-avro-offsets"
+      CONNECT_STATUS_STORAGE_TOPIC: "project-avro-status"
+      CONNECT_TOPIC_CREATION_ENABLE: 'true'
+      CONNECT_TOPIC_CREATION_DEFAULT_PARTITIONS: 1
+      CONNECT_TOPIC_CREATION_DEFAULT_REPLICATION_FACTOR: 1
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_KEY_CONVERTER: "io.confluent.connect.avro.AvroConverter"
+      CONNECT_VALUE_CONVERTER: "io.confluent.connect.avro.AvroConverter"
+      CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+      CONNECT_INTERNAL_KEY_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_INTERNAL_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_REST_ADVERTISED_HOST_NAME: "kafka-connect-avro"
+      CONNECT_LOG4J_ROOT_LOGLEVEL: WARN
+      CONNECT_PLUGIN_PATH: /usr/share/java,/etc/kafka-connect/plugins

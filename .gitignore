@@ -1,0 +1,9 @@
+### Scala
+*.log
+
+### SBT
+target/
+
+### IntelliJ
+.idea
+.bsp
